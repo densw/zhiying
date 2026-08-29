@@ -1,0 +1,91 @@
+services:
+  analytics-db:
+    image: postgres:16
+    container_name: zhiying-analytics-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bank_marketing}
+      POSTGRES_USER: ${POSTGRES_USER:-bank_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank_password}
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bank_user} -d ${POSTGRES_DB:-bank_marketing}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - analytics_postgres_data:/var/lib/postgresql/data
+
+  analytics-app:
+    image: apache/superset:latest
+    container_name: zhiying-analytics-app
+    depends_on:
+      analytics-db:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: zhiying-analytics-secret-key
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_LOAD_EXAMPLES: "no"
+      SUPERSET_ENV: production
+      POSTGRES_DB: ${POSTGRES_DB:-bank_marketing}
+      POSTGRES_USER: ${POSTGRES_USER:-bank_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank_password}
+      POSTGRES_HOST: analytics-db
+      POSTGRES_PORT: "5432"
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin123}
+      SUPERSET_ADMIN_FIRSTNAME: ${SUPERSET_ADMIN_FIRSTNAME:-Data}
+      SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME:-Ops}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.local}
+    ports:
+      - "8090:8088"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        superset db upgrade &&
+        superset fab create-admin \
+          --username "$${SUPERSET_ADMIN_USERNAME}" \
+          --firstname "$${SUPERSET_ADMIN_FIRSTNAME}" \
+          --lastname "$${SUPERSET_ADMIN_LASTNAME}" \
+          --email "$${SUPERSET_ADMIN_EMAIL}" \
+          --password "$${SUPERSET_ADMIN_PASSWORD}" || true &&
+        superset init &&
+        /usr/bin/run-server.sh
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health').read()\""]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    volumes:
+      - analytics_superset_home:/app/superset_home
+      - ./config/superset_config.py:/app/pythonpath/superset_config.py:ro
+
+  analytics-bootstrap:
+    build:
+      context: ./bootstrap
+    container_name: zhiying-analytics-bootstrap
+    depends_on:
+      analytics-db:
+        condition: service_healthy
+      analytics-app:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bank_marketing}
+      POSTGRES_USER: ${POSTGRES_USER:-bank_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank_password}
+      POSTGRES_HOST: analytics-db
+      POSTGRES_PORT: "5432"
+      SUPERSET_BASE_URL: http://analytics-app:8088
+      SUPERSET_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin123}
+    command: ["python", "/workspace/scripts/bootstrap.py"]
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./sql:/workspace/sql:ro
+      - ../../source-bank-marketing/data/raw/bank-full.csv:/workspace/data/bank-full.csv:ro
+    restart: "no"
+
+volumes:
+  analytics_postgres_data:
+  analytics_superset_home:

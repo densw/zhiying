@@ -1,0 +1,227 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: zhiying
+      POSTGRES_USER: zhiying
+      POSTGRES_PASSWORD: zhiying_local_pwd
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhiying -d zhiying"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  experiments:
+    build:
+      context: .
+      dockerfile: services/pipeline/Dockerfile
+    command: >-
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlartifacts/mlflow.db
+      --artifacts-destination /mlartifacts --serve-artifacts
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health').read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  experiments-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    command: ["streamlit", "run", "services/experiments_public.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      DATABASE_URL: postgresql://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      PYTHONPATH: /app
+    ports:
+      - "8104:8501"
+    depends_on:
+      data-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  data-pipeline:
+    build:
+      context: .
+      dockerfile: services/pipeline/Dockerfile
+    command: ["python", "-m", "services.pipeline.cli", "ensure-ready"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      MLFLOW_TRACKING_URI: http://experiments:5000
+      MLFLOW_EXPERIMENT_NAME: 客户认购倾向训练
+      PIPELINE_DATASET_PATH: /app/data/raw/bank-full.csv
+    volumes:
+      - pipeline-runtime:/app/runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      experiments:
+        condition: service_healthy
+
+  analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    command: ["streamlit", "run", "services/analytics_public.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      DATABASE_URL: postgresql://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      PYTHONPATH: /app
+    ports:
+      - "8101:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      data-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  decision:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    command: ["streamlit", "run", "services/decision.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      DATABASE_URL: postgresql://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      PYTHONPATH: /app
+      PIPELINE_RUNTIME_DIR: /app/runtime
+    volumes:
+      - pipeline-runtime:/app/runtime:ro
+    ports:
+      - "8102:8501"
+    depends_on:
+      data-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  reports:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    command: ["streamlit", "run", "services/reports_public.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      DATABASE_URL: postgresql://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      PYTHONPATH: /app
+    ports:
+      - "8103:8501"
+    depends_on:
+      data-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  monitoring:
+    build:
+      context: .
+      dockerfile: services/monitoring/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+    ports:
+      - "8105:8000"
+    depends_on:
+      data-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 10s
+      timeout: 20s
+      retries: 30
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: services/orchestration/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      MLFLOW_TRACKING_URI: http://experiments:5000
+      PIPELINE_DATASET_PATH: /app/data/raw/bank-full.csv
+      REPORTS_INTERNAL_URL: http://reports:3000
+      MONITORING_INTERNAL_URL: http://monitoring:8000
+    ports:
+      - "8106:3000"
+    volumes:
+      - dagster-home:/app/runtime/dagster
+      - pipeline-runtime:/app/runtime
+    depends_on:
+      monitoring:
+        condition: service_healthy
+      reports:
+        condition: service_started
+
+  pipeline-daemon:
+    build:
+      context: .
+      dockerfile: services/orchestration/Dockerfile
+    command: ["dagster-daemon", "run", "-w", "/app/services/orchestration/workspace.yaml"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://zhiying:zhiying_local_pwd@postgres:5432/zhiying
+      MLFLOW_TRACKING_URI: http://experiments:5000
+      PIPELINE_DATASET_PATH: /app/data/raw/bank-full.csv
+      DAGSTER_HOME: /app/runtime/dagster
+    volumes:
+      - dagster-home:/app/runtime/dagster
+      - pipeline-runtime:/app/runtime
+    depends_on:
+      pipeline:
+        condition: service_started
+
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile.portal
+    ports:
+      - "3000:3000"
+    depends_on:
+      analytics:
+        condition: service_healthy
+      decision:
+        condition: service_healthy
+      monitoring:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - portal
+      - analytics
+      - decision
+      - reports
+      - experiments
+      - experiments-ui
+      - monitoring
+      - pipeline
+
+volumes:
+  postgres-data:
+  mlflow-artifacts:
+  pipeline-runtime:
+  superset-home:
+  dagster-home:

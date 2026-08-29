@@ -1,0 +1,64 @@
+services:
+  reports-db:
+    image: postgres:16
+    container_name: zhiying-reports-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bank_marketing}
+      POSTGRES_USER: ${POSTGRES_USER:-bank_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank_password}
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bank_user} -d ${POSTGRES_DB:-bank_marketing}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  reports-bootstrap:
+    build:
+      context: ../analytics/bootstrap
+    container_name: zhiying-reports-bootstrap
+    depends_on:
+      reports-db:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bank_marketing}
+      POSTGRES_USER: ${POSTGRES_USER:-bank_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank_password}
+      POSTGRES_HOST: reports-db
+      POSTGRES_PORT: "5432"
+      SUPERSET_BASE_URL: http://127.0.0.1:8088
+      SUPERSET_USERNAME: unused
+      SUPERSET_PASSWORD: unused
+    command:
+      - python
+      - -c
+      - |
+        from pathlib import Path
+        import sys
+        sys.path.append('/workspace/scripts')
+        import bootstrap
+        bootstrap.wait_for_postgres()
+        bootstrap.seed_database()
+        print('reports bootstrap completed')
+    volumes:
+      - ../analytics/scripts:/workspace/scripts:ro
+      - ../analytics/sql:/workspace/sql:ro
+      - ../../source-bank-marketing/data/raw/bank-full.csv:/workspace/data/bank-full.csv:ro
+    restart: "no"
+
+  reports-app:
+    build:
+      context: .
+    container_name: zhiying-reports-app
+    depends_on:
+      reports-db:
+        condition: service_healthy
+      reports-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      DATABASE: reporting
+      EVIDENCE_DEV_MODE: "false"
+    ports:
+      - "3010:3000"
+

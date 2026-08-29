@@ -1,0 +1,32 @@
+{
+  auto_https off
+  admin off
+}
+
+http://platform.localhost {
+  reverse_proxy portal:3000
+}
+
+http://analytics.localhost {
+  reverse_proxy analytics:8501
+}
+
+http://decision.localhost {
+  reverse_proxy decision:8501
+}
+
+http://report.localhost {
+  reverse_proxy reports:8501
+}
+
+http://experiments.localhost {
+  reverse_proxy experiments-ui:8501
+}
+
+http://monitor.localhost {
+  reverse_proxy monitoring:8000
+}
+
+http://pipeline.localhost {
+  reverse_proxy pipeline:3000
+}

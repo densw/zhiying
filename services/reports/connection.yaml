@@ -1,0 +1,9 @@
+type: postgres
+host: ${POSTGRES_HOST}
+port: 5432
+database: ${POSTGRES_DB}
+user: ${POSTGRES_USER}
+password: ${POSTGRES_PASSWORD}
+sslmode: disable
+schema: analytics
+schemas: [analytics, ml, curated]

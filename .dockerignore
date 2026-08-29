@@ -1,0 +1,11 @@
+.git
+.venv*
+node_modules
+dist
+coverage
+work
+outputs
+*.tar.gz
+runtime
+models
+__pycache__

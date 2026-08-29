@@ -1,0 +1,32 @@
+version: customer_propensity_v1
+entity_key: contact_id
+target_column: subscribed
+raw_table: raw.customer_campaign_contacts
+source_table: curated.customer_features
+numeric_features:
+  - age
+  - balance
+  - campaign
+  - pdays
+  - previous
+  - month_number
+  - day
+categorical_features:
+  - job
+  - marital
+  - education
+  - default
+  - housing
+  - loan
+  - contact
+  - poutcome
+excluded_features:
+  - duration
+  - contact_duration_minutes
+score_columns:
+  - customer_code
+  - age_band
+  - job
+  - education
+  - contact
+  - month_name
