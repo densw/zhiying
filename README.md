@@ -2,6 +2,8 @@
 
 面向银行营销场景的中文数据分析与客户经营演示平台，覆盖历史分析、认购概率预测、有限容量优先触达、模型实验、数据监控和数据流水线。
 
+![平台首页](docs/screenshots/homepage-overview.png)
+
 ## 项目解决的问题
 
 营销团队每天只能联系有限数量的客户。本平台使用历史营销记录训练概率模型，为新客户输出认购概率、优先级和 Top-N 触达名单，帮助判断客户价值、预计转化、营销容量和模型可靠性。
@@ -18,8 +20,6 @@
 | 数据监控 | http://monitor.localhost/ | 中文质量与漂移结论 |
 | 技术监控明细 | http://monitor.localhost/evidently | 当前批次与参考样本明细 |
 | 数据流水线 | http://pipeline.localhost/ | 数据处理和编排任务 |
-
-![平台首页](docs/screenshots/homepage-overview.png)
 
 ### 指标与模型选择
 
