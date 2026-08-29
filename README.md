@@ -1,6 +1,6 @@
 # 智营客户经营决策平台
 
-面向银行营销场景的中文数据分析与客户经营演示平台，覆盖历史分析、认购概率预测、有限容量优先触达、模型实验、数据监控和数据流水线。
+面向银行营销场景的数据分析与客户经营演示平台，覆盖历史分析、认购概率预测、有限容量优先触达、模型实验、数据监控和数据流水线。
 
 ![平台首页](docs/screenshots/homepage-overview.png)
 
@@ -17,7 +17,7 @@
 | 营销决策 | http://decision.localhost/ | 上传或模拟新客户并生成优先名单 |
 | 经营报告 | http://report.localhost/ | 管理层摘要、客户分析和建议 |
 | 模型实验 | http://experiments.localhost/ | 训练记录、指标和模型产物 |
-| 数据监控 | http://monitor.localhost/ | 中文质量与漂移结论 |
+| 数据监控 | http://monitor.localhost/ | 数据质量与漂移结论 |
 | 技术监控明细 | http://monitor.localhost/evidently | 当前批次与参考样本明细 |
 | 数据流水线 | http://pipeline.localhost/ | 数据处理和编排任务 |
 
@@ -25,7 +25,7 @@
 
 成功认购属于少数类，不能只看准确率。ROC-AUC 看整体排序区分能力；PR-AUC 看正类排序和名单命中质量；Precision 看名单命中率；Recall 看潜在客户覆盖率；F1 看 Precision 与 Recall 的平衡；Brier 分数看概率校准，越低越好。
 
-本项目以“有限触达容量下提升高潜客户排序质量”为目标，优先看 PR-AUC，同时参考 ROC-AUC、F1、Recall 和 Brier。真实结果中，XGBoost 的 PR-AUC **46.36%**、ROC-AUC **80.32%**、F1 **44.84%** 均为候选方案最高，因此选择为生产模型。随机森林的 Brier 分数更低，概率校准更稳，作为备选保留。模型实验页面提供了完整中文解释。
+本项目以“有限触达容量下提升高潜客户排序质量”为目标，优先看 PR-AUC，同时参考 ROC-AUC、F1、Recall 和 Brier。真实结果中，XGBoost 的 PR-AUC **46.36%**、ROC-AUC **80.32%**、F1 **44.84%** 均为候选方案最高，因此选择为生产模型。随机森林的 Brier 分数更低，概率校准更稳，作为备选保留。模型实验页面提供了完整的指标解释。
 
 ![模型实验页面](docs/screenshots/model-comparison.png)
 
@@ -63,4 +63,4 @@
 
 ## 测试与注意事项
 
-运行 `pytest -q`、`docker compose config --quiet`、`docker compose ps` 检查代码和服务状态。本项目用于本地演示和面试展示，不构成真实金融授信或营销建议；上传 CSV 只在本机 Docker 环境处理。用户界面、README 和报告均为中文，不展示外部项目地址或上游仓库信息。更换数据集时请保持字段语义一致，并重新执行完整训练。
+运行 `pytest -q`、`docker compose config --quiet`、`docker compose ps` 检查代码和服务状态。本项目用于本地演示和面试展示，不构成真实金融授信或营销建议；上传 CSV 只在本机 Docker 环境处理。仓库不依赖外部项目地址或在线服务。更换数据集时请保持字段语义一致，并重新执行完整训练。
