@@ -19,6 +19,16 @@
 | 技术监控明细 | http://monitor.localhost/evidently | 当前批次与参考样本明细 |
 | 数据流水线 | http://pipeline.localhost/ | 数据处理和编排任务 |
 
+![平台首页](docs/screenshots/homepage-overview.png)
+
+### 指标与模型选择
+
+成功认购属于少数类，不能只看准确率。ROC-AUC 看整体排序区分能力；PR-AUC 看正类排序和名单命中质量；Precision 看名单命中率；Recall 看潜在客户覆盖率；F1 看 Precision 与 Recall 的平衡；Brier 分数看概率校准，越低越好。
+
+本项目以“有限触达容量下提升高潜客户排序质量”为目标，优先看 PR-AUC，同时参考 ROC-AUC、F1、Recall 和 Brier。真实结果中，XGBoost 的 PR-AUC **46.36%**、ROC-AUC **80.32%**、F1 **44.84%** 均为候选方案最高，因此选择为生产模型。随机森林的 Brier 分数更低，概率校准更稳，作为备选保留。模型实验页面提供了完整中文解释。
+
+![模型实验页面](docs/screenshots/model-comparison.png)
+
 ## 数据来源与原始字段
 
 `data/raw/bank-full.csv` 是随项目本地化保存的公开银行营销历史记录，共 **45,211** 条样本。每行代表一次客户营销联系，`y` 表示活动后是否认购定期存款。
@@ -39,17 +49,13 @@
 
 也可依次执行 `init-db`、`load-data`、`build-features`、`train`、`score` 五个子命令。
 
-### 指标与模型选择
-
-成功认购属于少数类，不能只看准确率。ROC-AUC 看整体排序区分能力；PR-AUC 看正类排序和名单命中质量；Precision 看名单命中率；Recall 看潜在客户覆盖率；F1 看 Precision 与 Recall 的平衡；Brier 分数看概率校准，越低越好。
-
-本项目以“有限触达容量下提升高潜客户排序质量”为目标，优先看 PR-AUC，同时参考 ROC-AUC、F1、Recall 和 Brier。真实结果中，XGBoost 的 PR-AUC **46.36%**、ROC-AUC **80.32%**、F1 **44.84%** 均为候选方案最高，因此选择为生产模型。随机森林的 Brier 分数更低，概率校准更稳，作为备选保留。模型实验页面提供了完整中文解释。
-
 ## 新客户预测
 
-打开 http://decision.localhost/，可模拟批次或上传 CSV。上传文件必须包含原始字段：`age,balance,campaign,pdays,previous,day,month,job,marital,education,default,housing,loan,contact,poutcome`。不需要上传 `y` 和 `duration`。
+打开 `http://decision.localhost/`，可模拟批次或上传 CSV。上传文件必须包含原始字段：`age,balance,campaign,pdays,previous,day,month,job,marital,education,default,housing,loan,contact,poutcome`。不需要上传 `y` 和 `duration`。
 
 系统会校验字段、映射月份、按训练顺序重排特征、调用生产模型，输出认购概率、评分十分位、优先级、推荐渠道和 Top-N 名单，并估算预计转化、成本、收益和 ROI。示例文件：`data/examples/decision-upload-sample.csv`。
+
+![新客户预测页面](docs/screenshots/decision-prediction.png)
 
 ## 目录结构
 
