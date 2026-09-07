@@ -18,7 +18,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-name")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("init-db", "load-data", "build-features", "train", "score", "run-all", "ensure-ready"):
+    for command in (
+        "init-db",
+        "load-data",
+        "build-features",
+        "train",
+        "score",
+        "run-all",
+        "ensure-ready",
+    ):
         subparsers.add_parser(command)
     return parser
 
@@ -35,19 +43,29 @@ def main() -> None:
 
     if args.command == "init-db":
         bootstrap_database(engine, settings.sql_bootstrap_path)
-        print(json.dumps({"status": "ok", "database": settings.database_url}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "ok", "database": settings.database_url}, ensure_ascii=False
+            )
+        )
         return
 
     bootstrap_database(engine, settings.sql_bootstrap_path)
 
     if args.command == "load-data":
         staged = import_raw_dataset(settings, engine)
-        print(json.dumps({"status": "ok", "loaded_rows": len(staged)}, ensure_ascii=False))
+        print(
+            json.dumps({"status": "ok", "loaded_rows": len(staged)}, ensure_ascii=False)
+        )
         return
 
     if args.command == "build-features":
         curated = build_curated_dataset(engine)
-        print(json.dumps({"status": "ok", "feature_rows": len(curated)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "ok", "feature_rows": len(curated)}, ensure_ascii=False
+            )
+        )
         return
 
     if args.command == "train":
@@ -62,10 +80,20 @@ def main() -> None:
         counts = fetch_frame(
             engine,
             "SELECT (SELECT COUNT(*) FROM ml.training_runs WHERE selected_model = TRUE) AS selected, "
-            "(SELECT COUNT(*) FROM ml.model_scores s JOIN ml.training_runs r USING (run_id) WHERE r.selected_model = TRUE) AS scores",
+            "(SELECT COUNT(*) FROM ml.model_scores s JOIN ml.training_runs r USING (run_id) WHERE r.selected_model = TRUE) AS scores, "
+            "(SELECT COUNT(DISTINCT model_name) FROM ml.training_runs WHERE split_strategy = 'time') AS time_models",
         ).iloc[0]
-        if int(counts["selected"]) == 1 and int(counts["scores"]) == 45211:
-            print(json.dumps({"status": "ready", "action": "skipped", "scored_rows": 45211}, ensure_ascii=False))
+        if (
+            int(counts["selected"]) == 1
+            and int(counts["scores"]) == 45211
+            and int(counts["time_models"]) >= 3
+        ):
+            print(
+                json.dumps(
+                    {"status": "ready", "action": "skipped", "scored_rows": 45211},
+                    ensure_ascii=False,
+                )
+            )
             return
 
     staged = import_raw_dataset(settings, engine)

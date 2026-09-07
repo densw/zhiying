@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
-from pathlib import Path
-
 import joblib
 import mlflow
 from mlflow import MlflowClient
@@ -36,7 +34,12 @@ from xgboost import XGBClassifier
 from sqlalchemy.engine import Engine
 
 from services.pipeline.dataset import strip_audit_columns
-from services.pipeline.db import append_table_contents, clear_selected_models, delete_run_outputs, fetch_frame
+from services.pipeline.db import (
+    append_table_contents,
+    clear_selected_models,
+    delete_run_outputs,
+    fetch_frame,
+)
 from services.pipeline.feature_registry import FeatureRegistry, load_feature_registry
 from services.pipeline.schemas import validate_curated
 from services.pipeline.settings import PipelineSettings
@@ -50,6 +53,25 @@ class ModelBundle:
     training_columns: tuple[str, ...]
     model_relative_path: str
     trained_at: str
+
+
+@dataclass(frozen=True)
+class TrainingSplit:
+    strategy: str
+    train_period: str
+    test_period: str
+    x_train: pd.DataFrame
+    x_test: pd.DataFrame
+    y_train: pd.Series
+    y_test: pd.Series
+
+    @property
+    def train_positive_rate(self) -> float:
+        return float(self.y_train.mean())
+
+    @property
+    def test_positive_rate(self) -> float:
+        return float(self.y_test.mean())
 
 
 def build_preprocessor(registry: FeatureRegistry) -> ColumnTransformer:
@@ -127,10 +149,51 @@ def candidate_models(registry: FeatureRegistry) -> dict[str, Pipeline]:
     }
 
 
+def split_training_data(
+    curated: pd.DataFrame,
+    registry: FeatureRegistry,
+    strategy: str,
+) -> TrainingSplit:
+    features = curated.loc[:, list(registry.training_columns)]
+    target = curated.loc[:, registry.target_column]
+    if strategy == "random":
+        x_train, x_test, y_train, y_test = train_test_split(
+            features,
+            target,
+            test_size=0.25,
+            random_state=42,
+            stratify=target,
+        )
+        return TrainingSplit(
+            "random",
+            "全月份随机抽样",
+            "全月份随机抽样",
+            x_train,
+            x_test,
+            y_train,
+            y_test,
+        )
+    if strategy == "time":
+        train_mask = curated["month_number"].between(1, 7)
+        test_mask = curated["month_number"].between(8, 12)
+        return TrainingSplit(
+            "time",
+            "1–7月",
+            "8–12月",
+            features.loc[train_mask],
+            features.loc[test_mask],
+            target.loc[train_mask],
+            target.loc[test_mask],
+        )
+    raise ValueError(f"Unsupported split strategy: {strategy}")
+
+
 def choose_threshold(y_true: pd.Series, probabilities: np.ndarray) -> float:
     precision, recall, thresholds = precision_recall_curve(y_true, probabilities)
     beta_sq = 4.0
-    scores = (1.0 + beta_sq) * precision * recall / (beta_sq * precision + recall + 1e-12)
+    scores = (
+        (1.0 + beta_sq) * precision * recall / (beta_sq * precision + recall + 1e-12)
+    )
     best_index = int(np.nanargmax(scores[:-1]))
     return float(thresholds[best_index])
 
@@ -147,14 +210,20 @@ def compute_metrics(
         "roc_auc": round(float(roc_auc_score(y_true, probabilities)), 6),
         "pr_auc": round(float(average_precision_score(y_true, probabilities)), 6),
         "accuracy": round(float(accuracy_score(y_true, predictions)), 6),
-        "balanced_accuracy": round(float(balanced_accuracy_score(y_true, predictions)), 6),
-        "precision": round(float(precision_score(y_true, predictions, zero_division=0)), 6),
+        "balanced_accuracy": round(
+            float(balanced_accuracy_score(y_true, predictions)), 6
+        ),
+        "precision": round(
+            float(precision_score(y_true, predictions, zero_division=0)), 6
+        ),
         "recall": round(float(recall_score(y_true, predictions, zero_division=0)), 6),
         "f1": round(float(f1_score(y_true, predictions, zero_division=0)), 6),
         "log_loss": round(float(log_loss(y_true, probabilities, labels=[0, 1])), 6),
         "brier_score": round(float(brier_score_loss(y_true, probabilities)), 6),
         "threshold": round(float(threshold), 6),
-        "confusion_matrix_json": json.dumps(confusion_matrix(y_true, predictions).tolist()),
+        "confusion_matrix_json": json.dumps(
+            confusion_matrix(y_true, predictions).tolist()
+        ),
         "classification_report_text": classification_report(
             y_true,
             predictions,
@@ -186,10 +255,14 @@ def build_ranked_scores(
 ) -> pd.DataFrame:
     ranked = frame.copy()
     ranked["propensity_score"] = probabilities
-    ranked = ranked.sort_values("propensity_score", ascending=False).reset_index(drop=True)
+    ranked = ranked.sort_values("propensity_score", ascending=False).reset_index(
+        drop=True
+    )
     ranked["rank"] = np.arange(1, len(ranked) + 1)
     ranked["population_share"] = ranked["rank"] / len(ranked)
-    ranked["decile"] = np.ceil(ranked["population_share"] * 10).clip(upper=10).astype(int)
+    ranked["decile"] = (
+        np.ceil(ranked["population_share"] * 10).clip(upper=10).astype(int)
+    )
     ranked["priority_tier"] = np.select(
         [
             ranked["propensity_score"] >= ranked["propensity_score"].quantile(0.90),
@@ -201,8 +274,12 @@ def build_ranked_scores(
     ranked["cumulative_responders"] = ranked[target_column].cumsum()
     total_responders = max(int(ranked[target_column].sum()), 1)
     baseline_rate = max(float(ranked[target_column].mean()), 1e-12)
-    ranked["cumulative_capture_rate"] = ranked["cumulative_responders"] / total_responders
-    ranked["cumulative_response_rate"] = ranked["cumulative_responders"] / ranked["rank"]
+    ranked["cumulative_capture_rate"] = (
+        ranked["cumulative_responders"] / total_responders
+    )
+    ranked["cumulative_response_rate"] = (
+        ranked["cumulative_responders"] / ranked["rank"]
+    )
     ranked["cumulative_lift"] = ranked["cumulative_response_rate"] / baseline_rate
     return ranked
 
@@ -233,17 +310,23 @@ def ensure_experiment(settings: PipelineSettings) -> int:
     experiment = client.get_experiment_by_name(settings.mlflow_experiment_name)
     if experiment:
         return normalize_experiment_id(experiment.experiment_id)
-    return normalize_experiment_id(client.create_experiment(
-        name=settings.mlflow_experiment_name,
-        artifact_location=settings.mlflow_experiment_artifact_location,
-    ))
+    return normalize_experiment_id(
+        client.create_experiment(
+            name=settings.mlflow_experiment_name,
+            artifact_location=settings.mlflow_experiment_artifact_location,
+        )
+    )
 
 
-def load_curated_training_frame(engine: Engine, registry: FeatureRegistry) -> pd.DataFrame:
-    frame = strip_audit_columns(fetch_frame(
-        engine,
-        f"SELECT * FROM {registry.source_table} ORDER BY {registry.entity_key}",
-    ))
+def load_curated_training_frame(
+    engine: Engine, registry: FeatureRegistry
+) -> pd.DataFrame:
+    frame = strip_audit_columns(
+        fetch_frame(
+            engine,
+            f"SELECT * FROM {registry.source_table} ORDER BY {registry.entity_key}",
+        )
+    )
     registry.validate_training_columns(tuple(frame.columns))
     return validate_curated(frame)
 
@@ -274,105 +357,140 @@ def train_models(settings: PipelineSettings, engine: Engine) -> dict[str, object
     registry = load_feature_registry(settings.registry_path)
     curated = load_curated_training_frame(engine, registry)
     experiment_id = ensure_experiment(settings)
-    x_train, x_test, y_train, y_test = train_test_split(
-        curated.loc[:, list(registry.training_columns)],
-        curated.loc[:, registry.target_column],
-        test_size=0.25,
-        random_state=42,
-        stratify=curated.loc[:, registry.target_column],
-    )
-
     training_records: list[dict[str, object]] = []
     latest_bundle: ModelBundle | None = None
 
-    for model_name, pipeline in candidate_models(registry).items():
-        with mlflow.start_run(experiment_id=experiment_id, run_name=model_name) as run:
-            pipeline.fit(x_train, y_train)
-            probabilities = pipeline.predict_proba(x_test)[:, 1]
-            metrics, predictions = compute_metrics(model_name, y_test, probabilities)
+    for split_strategy in ("random", "time"):
+        split = split_training_data(curated, registry, split_strategy)
+        for model_name, pipeline in candidate_models(registry).items():
+            with mlflow.start_run(
+                experiment_id=experiment_id, run_name=f"{model_name}-{split_strategy}"
+            ) as run:
+                x_train, x_test, y_train, y_test = (
+                    split.x_train,
+                    split.x_test,
+                    split.y_train,
+                    split.y_test,
+                )
+                pipeline.fit(x_train, y_train)
+                probabilities = pipeline.predict_proba(x_test)[:, 1]
+                metrics, predictions = compute_metrics(
+                    model_name, y_test, probabilities
+                )
 
-            run_dir = settings.artifacts_dir / run.info.run_id
-            model_dir = settings.models_dir / run.info.run_id
-            report_dir = settings.reports_dir / run.info.run_id
-            run_dir.mkdir(parents=True, exist_ok=True)
-            model_dir.mkdir(parents=True, exist_ok=True)
-            report_dir.mkdir(parents=True, exist_ok=True)
+                run_dir = settings.artifacts_dir / run.info.run_id
+                model_dir = settings.models_dir / run.info.run_id
+                report_dir = settings.reports_dir / run.info.run_id
+                run_dir.mkdir(parents=True, exist_ok=True)
+                model_dir.mkdir(parents=True, exist_ok=True)
+                report_dir.mkdir(parents=True, exist_ok=True)
 
-            evaluation = build_ranked_scores(
-                curated.loc[
-                    x_test.index,
-                    list(dict.fromkeys((registry.entity_key, *registry.score_columns, registry.target_column))),
-                ],
-                probabilities,
-                registry.target_column,
-            )
-            deciles = build_decile_summary(evaluation, registry.target_column)
-            importance = feature_importance(pipeline)
+                evaluation = build_ranked_scores(
+                    curated.loc[
+                        x_test.index,
+                        list(
+                            dict.fromkeys(
+                                (
+                                    registry.entity_key,
+                                    *registry.score_columns,
+                                    registry.target_column,
+                                )
+                            )
+                        ),
+                    ],
+                    probabilities,
+                    registry.target_column,
+                )
+                deciles = build_decile_summary(evaluation, registry.target_column)
+                importance = feature_importance(pipeline)
 
-            evaluation_path = report_dir / "evaluation_predictions.csv"
-            deciles_path = report_dir / "decile_performance.csv"
-            importance_path = report_dir / "feature_importance.csv"
-            metrics_path = report_dir / "metrics.json"
-            report_path = report_dir / "classification_report.txt"
-            model_path = model_dir / "model.joblib"
+                evaluation_path = report_dir / "evaluation_predictions.csv"
+                deciles_path = report_dir / "decile_performance.csv"
+                importance_path = report_dir / "feature_importance.csv"
+                metrics_path = report_dir / "metrics.json"
+                report_path = report_dir / "classification_report.txt"
+                model_path = model_dir / "model.joblib"
 
-            evaluation.to_csv(evaluation_path, index=False)
-            deciles.to_csv(deciles_path, index=False)
-            importance.to_csv(importance_path, index=False)
-            metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-            report_path.write_text(metrics["classification_report_text"], encoding="utf-8")
-            joblib.dump(pipeline, model_path)
+                evaluation.to_csv(evaluation_path, index=False)
+                deciles.to_csv(deciles_path, index=False)
+                importance.to_csv(importance_path, index=False)
+                metrics_path.write_text(
+                    json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                report_path.write_text(
+                    metrics["classification_report_text"], encoding="utf-8"
+                )
+                joblib.dump(pipeline, model_path)
 
-            mlflow.log_params(
-                {
-                    "model_name": model_name,
-                    "feature_version": registry.version,
-                    "training_rows": len(x_train),
-                    "test_rows": len(x_test),
-                    "feature_count": len(registry.training_columns),
-                    "leakage_guard": "duration_excluded",
-                }
-            )
-            mlflow.log_metrics(
-                {
-                    key: value
-                    for key, value in metrics.items()
-                    if isinstance(value, float)
-                }
-            )
-            mlflow.log_artifacts(str(report_dir), artifact_path="reports")
-            mlflow.sklearn.log_model(pipeline, artifact_path="model")
+                mlflow.log_params(
+                    {
+                        "model_name": model_name,
+                        "feature_version": registry.version,
+                        "training_rows": len(x_train),
+                        "test_rows": len(x_test),
+                        "feature_count": len(registry.training_columns),
+                        "leakage_guard": "duration_excluded",
+                        "split_strategy": split.strategy,
+                        "train_period": split.train_period,
+                        "test_period": split.test_period,
+                        "train_positive_rate": split.train_positive_rate,
+                        "test_positive_rate": split.test_positive_rate,
+                    }
+                )
+                mlflow.log_metrics(
+                    {
+                        key: value
+                        for key, value in metrics.items()
+                        if isinstance(value, float)
+                    }
+                )
+                mlflow.log_artifacts(str(report_dir), artifact_path="reports")
+                mlflow.sklearn.log_model(pipeline, artifact_path="model")
 
-            training_records.append(
-                {
-                    "run_id": run.info.run_id,
-                    "experiment_name": settings.mlflow_experiment_name,
-                    "model_name": model_name,
-                    "feature_version": registry.version,
-                    "selected_model": False,
-                    "training_rows": len(x_train),
-                    "test_rows": len(x_test),
-                    "threshold": metrics["threshold"],
-                    "roc_auc": metrics["roc_auc"],
-                    "pr_auc": metrics["pr_auc"],
-                    "accuracy": metrics["accuracy"],
-                    "balanced_accuracy": metrics["balanced_accuracy"],
-                    "precision": metrics["precision"],
-                    "recall": metrics["recall"],
-                    "f1": metrics["f1"],
-                    "log_loss": metrics["log_loss"],
-                    "brier_score": metrics["brier_score"],
-                    "confusion_matrix_json": metrics["confusion_matrix_json"],
-                    "classification_report_text": metrics["classification_report_text"],
-                    "mlflow_tracking_uri": settings.mlflow_tracking_uri,
-                    "mlflow_model_uri": f"runs:/{run.info.run_id}/model",
-                    "model_artifact_path": str(model_path.relative_to(settings.repo_root)),
-                    "report_artifact_path": str(report_dir.relative_to(settings.repo_root)),
-                    "trained_at": datetime.now(timezone.utc),
-                }
-            )
+                training_records.append(
+                    {
+                        "run_id": run.info.run_id,
+                        "experiment_name": settings.mlflow_experiment_name,
+                        "model_name": model_name,
+                        "feature_version": registry.version,
+                        "selected_model": False,
+                        "split_strategy": split.strategy,
+                        "train_period": split.train_period,
+                        "test_period": split.test_period,
+                        "train_positive_rate": split.train_positive_rate,
+                        "test_positive_rate": split.test_positive_rate,
+                        "training_rows": len(x_train),
+                        "test_rows": len(x_test),
+                        "threshold": metrics["threshold"],
+                        "roc_auc": metrics["roc_auc"],
+                        "pr_auc": metrics["pr_auc"],
+                        "accuracy": metrics["accuracy"],
+                        "balanced_accuracy": metrics["balanced_accuracy"],
+                        "precision": metrics["precision"],
+                        "recall": metrics["recall"],
+                        "f1": metrics["f1"],
+                        "log_loss": metrics["log_loss"],
+                        "brier_score": metrics["brier_score"],
+                        "confusion_matrix_json": metrics["confusion_matrix_json"],
+                        "classification_report_text": metrics[
+                            "classification_report_text"
+                        ],
+                        "mlflow_tracking_uri": settings.mlflow_tracking_uri,
+                        "mlflow_model_uri": f"runs:/{run.info.run_id}/model",
+                        "model_artifact_path": str(
+                            model_path.relative_to(settings.repo_root)
+                        ),
+                        "report_artifact_path": str(
+                            report_dir.relative_to(settings.repo_root)
+                        ),
+                        "trained_at": datetime.now(timezone.utc),
+                    }
+                )
 
-    best_record = max(training_records, key=lambda item: float(item["pr_auc"]))
+    production_candidates = [
+        record for record in training_records if record["split_strategy"] == "random"
+    ]
+    best_record = max(production_candidates, key=lambda item: float(item["pr_auc"]))
     for record in training_records:
         if record["run_id"] == best_record["run_id"]:
             record["selected_model"] = True
@@ -407,11 +525,21 @@ def score_latest_model(settings: PipelineSettings, engine: Engine) -> dict[str, 
     model_path = settings.repo_root / bundle.model_relative_path
     model = joblib.load(model_path)
 
-    probabilities = model.predict_proba(curated.loc[:, list(bundle.training_columns)])[:, 1]
+    probabilities = model.predict_proba(curated.loc[:, list(bundle.training_columns)])[
+        :, 1
+    ]
     ranked = build_ranked_scores(
         curated.loc[
             :,
-            list(dict.fromkeys((registry.entity_key, *registry.score_columns, registry.target_column))),
+            list(
+                dict.fromkeys(
+                    (
+                        registry.entity_key,
+                        *registry.score_columns,
+                        registry.target_column,
+                    )
+                )
+            ),
         ],
         probabilities,
         registry.target_column,
@@ -466,5 +594,7 @@ def score_latest_model(settings: PipelineSettings, engine: Engine) -> dict[str, 
         "run_id": bundle.run_id,
         "model_name": bundle.model_name,
         "scored_rows": len(score_output),
-        "top_decile_lift": round(float(decile_output.loc[decile_output["decile"] == 1, "lift"].iloc[0]), 6),
+        "top_decile_lift": round(
+            float(decile_output.loc[decile_output["decile"] == 1, "lift"].iloc[0]), 6
+        ),
     }

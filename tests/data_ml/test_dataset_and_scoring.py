@@ -2,9 +2,19 @@ from pathlib import Path
 
 import numpy as np
 
-from services.pipeline.dataset import build_feature_frame, read_source_csv, stage_raw_contacts, strip_audit_columns
+from services.pipeline.dataset import (
+    build_feature_frame,
+    read_source_csv,
+    stage_raw_contacts,
+    strip_audit_columns,
+)
 from services.pipeline.feature_registry import load_feature_registry
-from services.pipeline.modeling import build_decile_summary, build_ranked_scores, candidate_models
+from services.pipeline.modeling import (
+    build_decile_summary,
+    build_ranked_scores,
+    candidate_models,
+    split_training_data,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +62,9 @@ def test_candidate_model_fits_real_sample_without_duration():
     model = candidate_models(registry)["logistic_regression"]
 
     model.fit(curated.loc[:, list(registry.training_columns)], curated["subscribed"])
-    probabilities = model.predict_proba(curated.loc[:, list(registry.training_columns)])[:, 1]
+    probabilities = model.predict_proba(
+        curated.loc[:, list(registry.training_columns)]
+    )[:, 1]
 
     assert len(probabilities) == len(curated)
     assert np.all((probabilities >= 0.0) & (probabilities <= 1.0))
@@ -73,3 +85,35 @@ def test_decile_outputs_cover_entire_population():
     assert len(deciles) == 10
     assert int(deciles["prospects"].sum()) == len(curated)
     assert (deciles["lift"] >= 0).all()
+
+
+def test_time_split_trains_on_earlier_months_and_tests_on_later_months():
+    raw = read_source_csv(DATASET_PATH)
+    curated = build_feature_frame(stage_raw_contacts(raw))
+    registry = load_feature_registry(REPO_ROOT / "config" / "feature_registry.yml")
+
+    split = split_training_data(curated, registry, "time")
+
+    assert split.strategy == "time"
+    assert split.train_period == "1–7月"
+    assert split.test_period == "8–12月"
+    assert split.x_train["month_number"].max() == 7
+    assert split.x_test["month_number"].min() == 8
+    assert set(split.y_train.unique()) == {0, 1}
+    assert set(split.y_test.unique()) == {0, 1}
+    assert split.train_positive_rate == split.y_train.mean()
+    assert split.test_positive_rate == split.y_test.mean()
+
+
+def test_random_split_is_stratified_and_reproducible():
+    raw = read_source_csv(DATASET_PATH).head(4000)
+    curated = build_feature_frame(stage_raw_contacts(raw))
+    registry = load_feature_registry(REPO_ROOT / "config" / "feature_registry.yml")
+
+    first = split_training_data(curated, registry, "random")
+    second = split_training_data(curated, registry, "random")
+
+    assert first.strategy == "random"
+    assert first.train_period == "全月份随机抽样"
+    assert first.x_test.index.tolist() == second.x_test.index.tolist()
+    assert abs(first.y_train.mean() - first.y_test.mean()) < 0.01

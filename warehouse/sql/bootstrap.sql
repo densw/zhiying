@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS ml.training_runs (
     model_name VARCHAR(64) NOT NULL,
     feature_version VARCHAR(64) NOT NULL,
     selected_model BOOLEAN NOT NULL DEFAULT FALSE,
+    split_strategy VARCHAR(32) NOT NULL DEFAULT 'random',
+    train_period VARCHAR(64) NOT NULL DEFAULT '全月份随机抽样',
+    test_period VARCHAR(64) NOT NULL DEFAULT '全月份随机抽样',
+    train_positive_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    test_positive_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
     training_rows INTEGER NOT NULL,
     test_rows INTEGER NOT NULL,
     threshold DOUBLE PRECISION NOT NULL,
@@ -81,6 +86,12 @@ CREATE TABLE IF NOT EXISTS ml.training_runs (
     report_artifact_path TEXT NOT NULL,
     trained_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE ml.training_runs ADD COLUMN IF NOT EXISTS split_strategy VARCHAR(32) NOT NULL DEFAULT 'random';
+ALTER TABLE ml.training_runs ADD COLUMN IF NOT EXISTS train_period VARCHAR(64) NOT NULL DEFAULT '全月份随机抽样';
+ALTER TABLE ml.training_runs ADD COLUMN IF NOT EXISTS test_period VARCHAR(64) NOT NULL DEFAULT '全月份随机抽样';
+ALTER TABLE ml.training_runs ADD COLUMN IF NOT EXISTS train_positive_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE ml.training_runs ADD COLUMN IF NOT EXISTS test_positive_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS ml.model_scores (
     score_id BIGSERIAL PRIMARY KEY,
